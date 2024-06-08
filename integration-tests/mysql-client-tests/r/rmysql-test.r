@@ -1,0 +1,69 @@
+library(RMySQL)
+library(DBI)
+
+args = commandArgs(trailingOnly=TRUE)
+
+user = args[1]
+port = strtoi(args[2])
+db = args[3]
+
+conn = dbConnect(RMySQL::MySQL(), host="127.0.0.1", port = port,
+                 username = user, dbname = db)
+
+# check standard queries
+queries = list("create table test (pk int, value int, primary key(pk))",
+               "describe test",
+               "insert into test (pk, `value`) values (0,0)",
+               "select * from test")
+
+responses = list(NULL,
+                 data.frame(
+                    Field = c("pk", "value"),
+                    Type = c("int", "int"),
+                    Null = c("NO", "YES"),
+                    Key = c("PRI", ""),
+                    Default = c(NA_character_, NA_character_),
+                    Extra = c("", ""), stringsAsFactors = FALSE),
+                 NULL,
+                 data.frame(pk = c(as.integer(0)), value = c(as.integer(0)), stringsAsFactors = FALSE))
+
+for(i in 1:length(queries)) {
+    q = queries[[i]]
+    want = responses[[i]]
+    if (!is.null(want)) {
+        got <- dbGetQuery(conn, q)
+        if (length(want) == length(got)) {
+            for (j in 1:length(want)) {
+                if (!identical(want[[j]], got[[j]])) {
+                    print(q)
+                    print(c("want:", want[[j]], "type: ", typeof(want[[j]])))
+                    print(c("got:", got[[j]], "type: ", typeof(got[[j]])))
+                    quit("no", 1)
+                }
+            }
+        }
+    } else {
+        dbExecute(conn, q)
+    }
+}
+
+dolt_queries = list("call DOLT_ADD('-A')",
+                    "call dolt_commit('-m', 'my commit')",
+                    "call dolt_checkout('-b', 'mybranch')",
+                    "insert into test (pk, `value`) values (1,1)",
+                     "call dolt_commit('-a', '-m', 'my commit2')",
+                     "call dolt_checkout('main')",
+                     "call dolt_merge('mybranch')")
+
+for(i in 1:length(dolt_queries)) {
+    q = dolt_queries[[i]]
+    dbExecute(conn, q)
+}
+
+count <- dbGetQuery(conn, "select COUNT(*) as c from dolt_log")
+want <- data.frame(c = c(3))
+ret <- all.equal(count, want)
+if (!ret) {
+    print("Number of commits is incorrect")
+    quit(1)
+}

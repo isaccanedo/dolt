@@ -1,0 +1,312 @@
+// Copyright 2019 Dolthub, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+
+package dolt.services.remotesapi.v1alpha1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/dolthub/dolt/go/gen/proto/dolt/services/remotesapi/v1alpha1;remotesapi";
+
+service ChunkStoreService {
+  rpc GetRepoMetadata(GetRepoMetadataRequest) returns (GetRepoMetadataResponse);
+
+  rpc HasChunks(HasChunksRequest) returns (HasChunksResponse);
+
+  // Get the download locations for a list of chunk hashes.
+  // Deprecated. Use StreamDownloadLocations.
+  rpc GetDownloadLocations(GetDownloadLocsRequest) returns (GetDownloadLocsResponse);
+
+  // Get the download locations for a list of chunk hashes. Streaming to
+  // support large and incrementally available payloads. Results are generated
+  // as requests come in.
+  rpc StreamDownloadLocations(stream GetDownloadLocsRequest) returns (stream GetDownloadLocsResponse);
+
+  // Get upload locations for a list of table file hashes.
+  // NOTE: We upload full table files but download individual chunks.
+  rpc GetUploadLocations(GetUploadLocsRequest) returns (GetUploadLocsResponse);
+
+  rpc Rebase(RebaseRequest) returns (RebaseResponse);
+
+  rpc Root(RootRequest) returns (RootResponse);
+
+  rpc Commit(CommitRequest) returns (CommitResponse);
+
+  rpc ListTableFiles(ListTableFilesRequest) returns (ListTableFilesResponse);
+
+  rpc RefreshTableFileUrl(RefreshTableFileUrlRequest) returns (RefreshTableFileUrlResponse);
+
+  rpc AddTableFiles(AddTableFilesRequest) returns (AddTableFilesResponse);
+}
+
+// RepoId is how repositories are represented on dolthub, for example
+// `dolthub/us-housing-prices-v2` has org = dolthub, repo_name =
+// us-housing-prices-v2.
+//
+// All methods of ChunkStoreService targeting a repository take a RepoId. Many
+// will also take a `repo_token`, which can be provided in addition to a
+// RepoId. `repo_token`s can be returned from repository-accessing RPCs on
+// ChunkStoreService, and providing them instead of RepoId for future calls to
+// ChunkStoreService can be more efficient than providing RepoId itself.
+// `repo_token`s are fully opaque to the client.
+message RepoId {
+  string org = 1;
+  string repo_name = 2;
+}
+
+message HasChunksRequest {
+  RepoId repo_id = 1;
+  repeated bytes hashes = 2;
+
+  string repo_token = 3;
+  string repo_path = 4;
+}
+
+message HasChunksResponse {
+  repeated int32 absent = 1;
+
+  string repo_token = 2;
+}
+
+message HttpGetChunk {
+  string url = 1;
+  repeated bytes hashes = 2;
+}
+
+message RangeChunk {
+  bytes hash = 1;
+  uint64 offset = 2;
+  uint32 length = 3;
+}
+
+message HttpGetRange {
+  string url = 1;
+  repeated RangeChunk ranges = 2;
+}
+
+message DownloadLoc {
+  oneof location {
+    HttpGetChunk http_get = 1;
+    HttpGetRange http_get_range = 2;
+  }
+  google.protobuf.Timestamp refresh_after = 3;
+  RefreshTableFileUrlRequest refresh_request = 4;
+}
+
+message HttpPostTableFile {
+  string url = 1;
+}
+
+message UploadLoc {
+  bytes table_file_hash = 1;
+  oneof location {
+    HttpPostTableFile http_post = 2;
+  }
+}
+
+message GetDownloadLocsRequest {
+  RepoId repo_id = 1;
+  repeated bytes chunk_hashes = 2;
+
+  string repo_token = 3;
+  string repo_path = 4;
+}
+
+message GetDownloadLocsResponse {
+  repeated DownloadLoc locs = 1;
+
+  string repo_token = 2;
+}
+
+message TableFileDetails {
+  bytes id = 1;
+  uint64 content_length = 2;
+  bytes content_hash = 3;
+  uint64 num_chunks = 4;
+}
+
+message GetUploadLocsRequest {
+  RepoId repo_id = 1;
+  repeated bytes table_file_hashes = 2 [deprecated = true];
+  repeated TableFileDetails table_file_details = 3;
+
+  string repo_token = 4;
+  string repo_path = 5;
+}
+
+message GetUploadLocsResponse {
+  repeated UploadLoc locs = 1;
+
+  string repo_token = 2;
+}
+
+message RebaseRequest {
+  RepoId repo_id = 1;
+  string repo_token = 2;
+  string repo_path = 3;
+}
+
+message RebaseResponse {
+  string repo_token = 1;
+}
+
+message RootRequest {
+  RepoId repo_id = 1;
+
+  string repo_token = 2;
+  string repo_path = 3;
+}
+
+message RootResponse {
+  bytes root_hash = 1;
+
+  string repo_token = 2;
+}
+
+message ChunkTableInfo {
+  bytes hash = 1;
+  uint32 chunk_count = 2;
+}
+
+message CommitRequest {
+  RepoId repo_id = 1;
+  bytes current = 2;
+  bytes last = 3;
+  repeated ChunkTableInfo chunk_table_info = 4;
+  ClientRepoFormat client_repo_format = 14;
+  string repo_path = 5;
+}
+
+message CommitResponse {
+  bool success = 1;
+}
+
+message GetRepoMetadataRequest {
+  RepoId repo_id = 1;
+  ClientRepoFormat client_repo_format = 14;
+
+  string repo_token = 2;
+  string repo_path = 3;
+}
+
+// A ChunkStore can request a client to implement a specific concurrency
+// control mechanism when updating a branch HEAD.
+//
+// This exists because passive remotes, like DoltHub, typically do not have
+// meaningful workingSets. When a client requests to push a branch HEAD to a
+// DoltHub remote, they have no visibility into the workingSet/ value for the
+// corresponding branch. It has historically been the case that clients ignore
+// it and just push the branch HEAD.
+//
+// On the other hand, when pushing to a running sql-server, not stomping
+// concurrent transaction is important, and the remote endpoint will want the
+// pushing client to ensure that it both checks that the branch's working set
+// is clean and that it updates the branch's working set appropriately if the
+// push is successful.
+//
+// Servers advertise which concurrency control mechanism they want in their
+// GetRepoMetadataResponse.
+enum PushConcurrencyControl {
+  PUSH_CONCURRENCY_CONTROL_UNSPECIFIED = 0;
+  PUSH_CONCURRENCY_CONTROL_IGNORE_WORKING_SET = 1;
+  PUSH_CONCURRENCY_CONTROL_ASSERT_WORKING_SET = 2;
+}
+
+message GetRepoMetadataResponse {
+  // Version string of the noms binary format for this repository.
+  // See types.NomsBinFormat.
+  string nbf_version = 1;
+  // Version string of the nbs format of this repository.
+  // See nbs.StorageVersion.
+  string nbs_version = 2;
+  // Approximate number of bytes required for storage of all
+  // currently-referenced repository table files.
+  uint64 storage_size = 3;
+
+  string repo_token = 4;
+
+  PushConcurrencyControl push_concurrency_control = 5;
+}
+
+message ClientRepoFormat {
+  string nbf_version = 1;
+  string nbs_version = 2;
+}
+
+message ListTableFilesRequest  {
+  RepoId repo_id = 1;
+  bool appendix_only = 2 [deprecated = true];
+
+  string repo_token = 3;
+  string repo_path = 4;
+}
+
+message TableFileInfo {
+  string file_id = 1;
+  uint32 num_chunks = 2;
+  string url = 3;
+  google.protobuf.Timestamp refresh_after = 4;
+  RefreshTableFileUrlRequest refresh_request = 5;
+}
+
+message RefreshTableFileUrlRequest {
+  RepoId repo_id = 1;
+  string file_id = 2;
+
+  string repo_token = 3;
+  string repo_path = 4;
+}
+
+message RefreshTableFileUrlResponse {
+  string url = 1;
+  google.protobuf.Timestamp refresh_after = 2;
+
+  string repo_token = 3;
+}
+
+message ListTableFilesResponse {
+  bytes root_hash = 1;
+  repeated TableFileInfo table_file_info = 2;
+  repeated TableFileInfo appendix_table_file_info = 3;
+
+  string repo_token = 4;
+}
+
+enum ManifestAppendixOption {
+  MANIFEST_APPENDIX_OPTION_UNSPECIFIED = 0;
+  MANIFEST_APPENDIX_OPTION_SET = 1;
+  MANIFEST_APPENDIX_OPTION_APPEND = 2;
+}
+
+message AddTableFilesRequest {
+  RepoId repo_id = 1;
+  ClientRepoFormat client_repo_format = 2;
+  repeated ChunkTableInfo chunk_table_info = 3;
+  // If set, this is a write for the manifest appendix, not just the manifest table file specs.
+  // The table files appearing in `chunk_table_info` are added to `specs` and are also set
+  // in the manifest appendix. If `appendix_option` is `SET`, then the value of the appendix
+  // becomes the full list provided in `chunk_table_info` and any prior specs in the appendix
+  // are removed from the manifest specs. If `append_option` is `APPEND`, then the
+  // supplied table files are added to the appendix and to specs.
+  ManifestAppendixOption appendix_option = 4;
+
+  string repo_token = 5;
+  string repo_path = 6;
+}
+
+message AddTableFilesResponse {
+  bool success = 1;
+  string repo_token = 2;
+}
